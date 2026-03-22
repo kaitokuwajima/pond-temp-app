@@ -106,11 +106,41 @@ async function loadStore(key) { try { if (typeof window === "undefined") return 
 async function saveStore(key, data) { try { if (typeof window !== "undefined") localStorage.setItem(key, JSON.stringify(data)); } catch (e) { console.error(e); } }
 
 // ---- OVERPASS SEARCH (with retry at larger radius) ----
+const OVERPASS_MIRRORS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+const overpassCache = new Map();
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 async function searchOverpass(lat, lng, radius) {
+  const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)},${radius}`;
+  if (overpassCache.has(cacheKey)) return overpassCache.get(cacheKey);
+
   const q = `[out:json][timeout:20];(way["natural"="water"](around:${radius},${lat},${lng});relation["natural"="water"](around:${radius},${lat},${lng});way["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});relation["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});way["landuse"="reservoir"](around:${radius},${lat},${lng}););out body geom;`;
-  const r = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: "data=" + encodeURIComponent(q) });
-  if (!r.ok) throw new Error(`Overpass API エラー (${r.status})`);
-  return r.json();
+
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const url = OVERPASS_MIRRORS[attempt % OVERPASS_MIRRORS.length];
+    try {
+      const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(q) });
+      if (r.status === 429) {
+        await sleep(2000 * (attempt + 1));
+        lastErr = new Error(`Overpass API エラー (429)`);
+        continue;
+      }
+      if (!r.ok) throw new Error(`Overpass API エラー (${r.status})`);
+      const data = await r.json();
+      overpassCache.set(cacheKey, data);
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await sleep(1500 * (attempt + 1));
+    }
+  }
+  throw lastErr;
 }
 
 function distanceDeg(lat1, lng1, lat2, lng2) {
@@ -522,7 +552,12 @@ export default function App() {
     } catch (e) { console.error(e); setStage("error"); setError(e.message || "エラーが発生しました"); }
   }, []);
 
-  const onMapClick = useCallback((lat, lng) => { setMarker({ lat, lng }); doSearch(lat, lng); }, [doSearch]);
+  const debounceRef = useRef(null);
+  const onMapClick = useCallback((lat, lng) => {
+    setMarker({ lat, lng });
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { doSearch(lat, lng); }, 500);
+  }, [doSearch]);
 
   const handleSearch = useCallback(async () => {
     if (!searchText.trim()) return;
