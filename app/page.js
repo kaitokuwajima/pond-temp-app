@@ -119,7 +119,7 @@ async function searchOverpass(lat, lng, radius) {
   const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)},${radius}`;
   if (overpassCache.has(cacheKey)) return overpassCache.get(cacheKey);
 
-  const q = `[out:json][timeout:20];(way["natural"="water"](around:${radius},${lat},${lng});relation["natural"="water"](around:${radius},${lat},${lng});way["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});relation["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});way["landuse"="reservoir"](around:${radius},${lat},${lng}););out body geom;`;
+  const q = `[out:json][timeout:10];(way["natural"="water"](around:${radius},${lat},${lng});relation["natural"="water"](around:${radius},${lat},${lng});way["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});relation["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng}););out tags geom;`;
 
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
