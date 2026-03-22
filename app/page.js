@@ -113,13 +113,17 @@ async function searchOverpass(lat, lng, radius) {
   return r.json();
 }
 
-function extractBestPond(data) {
-  let best = null, bestArea = 0;
+function distanceDeg(lat1, lng1, lat2, lng2) {
+  const dlat = lat1 - lat2, dlng = (lng1 - lng2) * Math.cos(lat1 * Math.PI / 180);
+  return Math.sqrt(dlat * dlat + dlng * dlng);
+}
+
+function extractBestPond(data, clickLat, clickLng) {
+  let best = null, bestDist = Infinity;
   for (const el of data.elements || []) {
     let coords = [];
     if (el.type === "way" && el.geometry) coords = el.geometry.map(g => [g.lat, g.lon]);
     else if (el.type === "relation" && el.members) {
-      // Combine all outer ring geometries
       const outerCoords = [];
       for (const m of el.members) {
         if ((m.role === "outer" || m.role === "") && m.geometry) {
@@ -128,9 +132,13 @@ function extractBestPond(data) {
       }
       coords = outerCoords;
     }
+    if (coords.length < 3) continue;
     const a = polyAreaKm2(coords);
-    if (a > bestArea && coords.length > 2) {
-      bestArea = a;
+    const cLat = coords.reduce((s, c) => s + c[0], 0) / coords.length;
+    const cLng = coords.reduce((s, c) => s + c[1], 0) / coords.length;
+    const dist = distanceDeg(clickLat, clickLng, cLat, cLng);
+    if (dist < bestDist) {
+      bestDist = dist;
       best = { coords, areaKm2: a, name: el.tags?.name || el.tags?.["name:ja"] || "", osmId: el.id, type: el.tags?.water || el.tags?.natural || "water" };
     }
   }
@@ -470,7 +478,7 @@ export default function App() {
       for (const radius of [500, 2000, 5000]) {
         setStatusMsg(`半径${radius >= 1000 ? (radius / 1000) + "km" : radius + "m"}で検索中...`);
         data = await searchOverpass(lat, lng, radius);
-        best = extractBestPond(data);
+        best = extractBestPond(data, lat, lng);
         if (best) break;
       }
 
