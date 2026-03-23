@@ -481,6 +481,53 @@ function useFavs() {
 }
 
 // ============================================================
+// PAYWALL MODAL
+// ============================================================
+const DAILY_LIMIT = 5;
+
+function PaywallModal({ useCount, onClose, onCheckout, loading }) {
+  const C2 = { bg: "#040d1a", surface: "#081829", card: "#0c2137", accent: "#00c2e0", green: "#06d6a0", textDim: "#6a8da8", text: "#e4f0f8", border: "#15334d" };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(4,13,26,0.93)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: C2.card, borderRadius: 20, padding: 28, maxWidth: 380, width: "100%", border: `1px solid ${C2.border}` }}>
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 52, marginBottom: 10 }}>🎣</div>
+          <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 8, lineHeight: 1.4 }}>
+            1日の無料検索上限（{DAILY_LIMIT}回）に<br />達しました
+          </div>
+          <div style={{ fontSize: 12, color: C2.textDim, lineHeight: 1.8 }}>
+            プレミアムプランに登録すると<br />毎日何度でも水温を調べられます
+          </div>
+        </div>
+
+        <div style={{ background: C2.surface, borderRadius: 14, padding: 20, marginBottom: 20, border: `1px solid ${C2.accent}44` }}>
+          <div style={{ fontSize: 12, color: C2.accent, fontWeight: 700, marginBottom: 6 }}>プレミアムプラン</div>
+          <div style={{ fontSize: 34, fontWeight: 900, marginBottom: 12 }}>
+            ¥100<span style={{ fontSize: 14, fontWeight: 400, color: C2.textDim }}>/月</span>
+          </div>
+          <div style={{ fontSize: 12, color: C2.textDim, lineHeight: 2.2 }}>
+            ✅ 水温検索が無制限<br />
+            ✅ 全機能が使い放題<br />
+            ✅ いつでもキャンセル可能
+          </div>
+        </div>
+
+        <button
+          onClick={onCheckout}
+          disabled={loading}
+          style={{ width: "100%", background: `linear-gradient(135deg,#00c2e0,#06d6a0)`, color: "#fff", borderRadius: 14, padding: "14px 0", fontSize: 16, fontWeight: 900, marginBottom: 10, opacity: loading ? 0.7 : 1, cursor: loading ? "wait" : "pointer" }}
+        >
+          {loading ? "処理中..." : "月額100円で登録する →"}
+        </button>
+        <button onClick={onClose} style={{ width: "100%", background: "none", color: C2.textDim, fontSize: 13, padding: "8px 0", border: "none", cursor: "pointer" }}>
+          キャンセル
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 export default function App() {
@@ -498,6 +545,67 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState("");
   const { favs, add: addFav, rm: rmFav, is: isFav } = useFavs();
   const mapRef = useRef(null);
+
+  // ---- USAGE LIMIT & PREMIUM ----
+  const [useCount, setUseCount] = useState(0);
+  const [isPremium, setIsPremium] = useState(false);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  useEffect(() => {
+    const today = new Date().toDateString();
+    const stored = JSON.parse(localStorage.getItem("pondUsage") || '{"date":"","count":0}');
+    if (stored.date !== today) {
+      localStorage.setItem("pondUsage", JSON.stringify({ date: today, count: 0 }));
+      setUseCount(0);
+    } else {
+      setUseCount(stored.count);
+    }
+
+    const verifyPremium = async () => {
+      const customerId = localStorage.getItem("pondCustomerId");
+      if (!customerId) return;
+      const cached = JSON.parse(localStorage.getItem("pondPremium") || "null");
+      if (cached && Date.now() - cached.checkedAt < 3600000) {
+        setIsPremium(cached.active);
+        return;
+      }
+      try {
+        const r = await fetch(`/api/verify-subscription?customerId=${customerId}`);
+        const { active } = await r.json();
+        setIsPremium(active);
+        localStorage.setItem("pondPremium", JSON.stringify({ active, checkedAt: Date.now() }));
+      } catch {}
+    };
+    verifyPremium();
+  }, []);
+
+  const incrementUsage = useCallback(() => {
+    const today = new Date().toDateString();
+    const next = useCount + 1;
+    setUseCount(next);
+    localStorage.setItem("pondUsage", JSON.stringify({ date: today, count: next }));
+  }, [useCount]);
+
+  const handleCheckout = useCallback(async () => {
+    setCheckoutLoading(true);
+    try {
+      const customerId = localStorage.getItem("pondCustomerId");
+      const r = await fetch("/api/create-checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId }),
+      });
+      const { url, customerId: newId, error } = await r.json();
+      if (error) { alert("決済エラー: " + error); return; }
+      if (newId) localStorage.setItem("pondCustomerId", newId);
+      window.location.href = url;
+    } catch (e) {
+      alert("ネットワークエラーが発生しました");
+    } finally {
+      setCheckoutLoading(false);
+    }
+  }, []);
 
   const doSearch = useCallback(async (lat, lng) => {
     setStage("searching"); setError(""); setPond(null); setTimeline(null); setToday(null); setExplanation(""); setPondCoords(null); setTab("result");
@@ -552,22 +660,33 @@ export default function App() {
     } catch (e) { console.error(e); setStage("error"); setError(e.message || "エラーが発生しました"); }
   }, []);
 
+  const guardedSearch = useCallback((lat, lng) => {
+    if (!isPremium && useCount >= DAILY_LIMIT) {
+      setShowPaywall(true);
+      return;
+    }
+    if (!isPremium) incrementUsage();
+    doSearch(lat, lng);
+  }, [isPremium, useCount, incrementUsage, doSearch]);
+
   const debounceRef = useRef(null);
   const onMapClick = useCallback((lat, lng) => {
     setMarker({ lat, lng });
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => { doSearch(lat, lng); }, 500);
-  }, [doSearch]);
+    debounceRef.current = setTimeout(() => { guardedSearch(lat, lng); }, 500);
+  }, [guardedSearch]);
 
   const handleSearch = useCallback(async () => {
     if (!searchText.trim()) return;
+    if (!isPremium && useCount >= DAILY_LIMIT) { setShowPaywall(true); return; }
     setStage("searching"); setStatusMsg("場所を検索中...");
     const result = await geocodeWater(searchText);
     if (result) {
       setMarker({ lat: result.lat, lng: result.lng });
+      if (!isPremium) incrementUsage();
       doSearch(result.lat, result.lng);
     } else { setStage("error"); setError("場所が見つかりませんでした。\n池や湖の正式名称で試してみてください。"); }
-  }, [searchText, doSearch]);
+  }, [searchText, doSearch, isPremium, useCount, incrementUsage]);
 
   const presets = [
     { n: "相模湖", lat: 35.5930, lng: 139.2170 },
@@ -581,14 +700,32 @@ export default function App() {
     <div style={{ fontFamily: FONT, background: C.bg, color: C.text, minHeight: "100vh", maxWidth: 520, margin: "0 auto" }}>
       <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700;900&family=JetBrains+Mono:wght@400;600;700;800&family=Noto+Sans+JP:wght@400;600;700;800&display=swap" rel="stylesheet" />
 
+      {showPaywall && (
+        <PaywallModal
+          useCount={useCount}
+          loading={checkoutLoading}
+          onClose={() => setShowPaywall(false)}
+          onCheckout={handleCheckout}
+        />
+      )}
+
       {/* HEADER */}
       <div style={{ padding: "20px 16px 14px", background: `linear-gradient(180deg,${C.surface},transparent)` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ width: 46, height: 46, borderRadius: 14, background: `linear-gradient(135deg,${C.accent}22,${C.green}11)`, border: `1.5px solid ${C.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>🐟</div>
-          <div>
+          <div style={{ flex: 1 }}>
             <h1 style={{ fontSize: 21, fontWeight: 900, letterSpacing: -0.5, lineHeight: 1.2 }}>池温<span style={{ color: C.accent }}>よそく</span></h1>
             <span style={{ fontSize: 10, color: C.textDim }}>地図タップで水温予測 ・ 全API無料</span>
           </div>
+          {isPremium ? (
+            <div style={{ background: `linear-gradient(135deg,${C.accent}22,${C.green}11)`, border: `1px solid ${C.accent}44`, borderRadius: 20, padding: "4px 10px", fontSize: 11, color: C.accent, fontWeight: 700 }}>
+              ⭐ プレミアム
+            </div>
+          ) : (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 20, padding: "4px 10px", fontSize: 11, color: useCount >= DAILY_LIMIT ? C.danger : C.textDim }}>
+              {DAILY_LIMIT - useCount > 0 ? `残り${DAILY_LIMIT - useCount}回` : "上限到達"}
+            </div>
+          )}
         </div>
       </div>
 
