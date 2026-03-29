@@ -18,9 +18,9 @@ export default function LegalPage() {
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {[
           { label: "事業者名", value: "池温よそく運営事務局" },
-          { label: "運営責任者", value: "（代表者名をここに記載）" },
-          { label: "所在地", value: "（住所をここに記載）※ 請求があった場合に遅滞なく開示いたします" },
-          { label: "メールアドレス", value: "（メールアドレスをここに記載）" },
+          { label: "運営責任者", value: "桑島海斗" },
+          { label: "所在地", value: "香川県高松市高松町1489-1 ディアス高松A 201号" },
+          { label: "メールアドレス", value: "kaito.k0626@gmail.com" },
           { label: "販売価格", value: "月額100円（税込）" },
           { label: "支払い方法", value: "クレジットカード（Stripe経由）" },
           { label: "支払い時期", value: "サブスクリプション登録時に初回決済。以降、毎月自動更新。" },
