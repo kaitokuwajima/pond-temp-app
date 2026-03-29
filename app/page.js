@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useSession, signIn, signOut } from "next-auth/react";
+import Link from "next/link";
 // ============================================================
-// 池温よそく v1.1 - Full Featured (Search Fix)
+// 池温よそく v2.0 - Auth + Subscription + Usage Limit
 // ============================================================
 
 const C = {
@@ -109,7 +111,8 @@ async function saveStore(key, data) { try { if (typeof window !== "undefined") l
 const OVERPASS_MIRRORS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://overpass.osm.ch/api/interpreter",
 ];
 const overpassCache = new Map();
 
@@ -122,13 +125,13 @@ async function searchOverpass(lat, lng, radius) {
   const q = `[out:json][timeout:10];(way["natural"="water"](around:${radius},${lat},${lng});relation["natural"="water"](around:${radius},${lat},${lng});way["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng});relation["water"~"pond|lake|reservoir|basin"](around:${radius},${lat},${lng}););out tags geom;`;
 
   let lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const url = OVERPASS_MIRRORS[attempt % OVERPASS_MIRRORS.length];
+  for (let attempt = 0; attempt < OVERPASS_MIRRORS.length; attempt++) {
+    const url = OVERPASS_MIRRORS[attempt];
     try {
       const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(q) });
-      if (r.status === 429) {
-        await sleep(2000 * (attempt + 1));
-        lastErr = new Error(`Overpass API エラー (429)`);
+      if (r.status === 429 || r.status === 403 || r.status === 503) {
+        lastErr = new Error(`Overpass API エラー (${r.status})`);
+        await sleep(1500 * (attempt + 1));
         continue;
       }
       if (!r.ok) throw new Error(`Overpass API エラー (${r.status})`);
@@ -137,7 +140,7 @@ async function searchOverpass(lat, lng, radius) {
       return data;
     } catch (e) {
       lastErr = e;
-      if (attempt < 2) await sleep(1500 * (attempt + 1));
+      if (attempt < OVERPASS_MIRRORS.length - 1) await sleep(1500 * (attempt + 1));
     }
   }
   throw lastErr;
@@ -528,9 +531,40 @@ function PaywallModal({ useCount, onClose, onCheckout, loading }) {
 }
 
 // ============================================================
+// LOGIN SCREEN
+// ============================================================
+function LoginScreen() {
+  const btnBase = { width: "100%", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", border: "none", marginBottom: 10 };
+  return (
+    <div style={{ fontFamily: FONT, background: C.bg, color: C.text, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ maxWidth: 380, width: "100%", textAlign: "center" }}>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>🐟</div>
+        <h1 style={{ fontSize: 28, fontWeight: 900, marginBottom: 6 }}>池温<span style={{ color: C.accent }}>よそく</span></h1>
+        <p style={{ fontSize: 13, color: C.textDim, marginBottom: 30, lineHeight: 1.8 }}>地図タップで池の水温を科学的に予測<br />1日5回まで無料で利用できます</p>
+
+        <div style={{ background: C.card, borderRadius: 18, padding: 28, border: `1px solid ${C.border}`, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 16 }}>ログインして始める</div>
+          <button onClick={() => signIn("google")} style={{ ...btnBase, background: "#fff", color: "#333" }}>
+            Googleでログイン
+          </button>
+          <button onClick={() => signIn("apple")} style={{ ...btnBase, background: "#000", color: "#fff" }}>
+            Appleでログイン
+          </button>
+        </div>
+
+        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 2 }}>
+          ログインすると<a href="/terms" style={{ color: C.accent }}>利用規約</a>・<a href="/privacy" style={{ color: C.accent }}>プライバシーポリシー</a>に同意したものとみなされます
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 export default function App() {
+  const { data: session, status: authStatus } = useSession();
   const [stage, setStage] = useState("idle");
   const [error, setError] = useState("");
   const [center] = useState({ lat: 35.68, lng: 139.77 });
@@ -551,67 +585,69 @@ export default function App() {
   const [isPremium, setIsPremium] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
-  useEffect(() => {
-    const today = new Date().toDateString();
-    const stored = JSON.parse(localStorage.getItem("pondUsage") || '{"date":"","count":0}');
-    if (stored.date !== today) {
-      localStorage.setItem("pondUsage", JSON.stringify({ date: today, count: 0 }));
-      setUseCount(0);
-    } else {
-      setUseCount(stored.count);
-    }
-
-    const verifyPremium = async () => {
-      const customerId = localStorage.getItem("pondCustomerId");
-      if (!customerId) return;
-      const cached = JSON.parse(localStorage.getItem("pondPremium") || "null");
-      if (cached && Date.now() - cached.checkedAt < 3600000) {
-        setIsPremium(cached.active);
-        return;
-      }
-      try {
-        const r = await fetch(`/api/verify-subscription?customerId=${customerId}`);
-        const { active } = await r.json();
-        setIsPremium(active);
-        localStorage.setItem("pondPremium", JSON.stringify({ active, checkedAt: Date.now() }));
-      } catch {}
-    };
-    verifyPremium();
+  // サーバーから利用状況を取得
+  const fetchUsage = useCallback(async () => {
+    try {
+      const r = await fetch("/api/usage");
+      if (!r.ok) return;
+      const data = await r.json();
+      setUseCount(data.usageCount);
+      setIsPremium(data.subscriptionActive);
+    } catch {}
   }, []);
 
-  const incrementUsage = useCallback(() => {
-    const today = new Date().toDateString();
-    const next = useCount + 1;
-    setUseCount(next);
-    localStorage.setItem("pondUsage", JSON.stringify({ date: today, count: next }));
-  }, [useCount]);
+  useEffect(() => {
+    if (session) fetchUsage();
+  }, [session, fetchUsage]);
+
+  // サーバー側で利用回数をインクリメント
+  const incrementUsage = useCallback(async () => {
+    try {
+      const r = await fetch("/api/usage", { method: "POST" });
+      const data = await r.json();
+      if (!data.allowed) {
+        setShowPaywall(true);
+        return false;
+      }
+      setUseCount(data.usageCount);
+      return true;
+    } catch {
+      return true; // ネットワークエラー時はブロックしない
+    }
+  }, []);
 
   const handleCheckout = useCallback(async () => {
     setCheckoutLoading(true);
     try {
-      const customerId = localStorage.getItem("pondCustomerId");
-      const r = await fetch("/api/create-checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }),
-      });
-      const { url, customerId: newId, error } = await r.json();
-      if (error) { alert("決済エラー: " + error); return; }
-      if (newId) localStorage.setItem("pondCustomerId", newId);
-      window.location.href = url;
-    } catch (e) {
+      const r = await fetch("/api/create-checkout", { method: "POST" });
+      const data = await r.json();
+      if (data.error) {
+        if (data.error === "already_subscribed") { alert("既にプレミアム会員です"); setIsPremium(true); return; }
+        alert("決済エラー: " + data.error); return;
+      }
+      window.location.href = data.url;
+    } catch {
       alert("ネットワークエラーが発生しました");
     } finally {
       setCheckoutLoading(false);
     }
   }, []);
 
+  const handlePortal = useCallback(async () => {
+    try {
+      const r = await fetch("/api/create-portal", { method: "POST" });
+      const data = await r.json();
+      if (data.url) window.location.href = data.url;
+      else alert("ポータルを開けませんでした");
+    } catch { alert("ネットワークエラーが発生しました"); }
+  }, []);
+
   const doSearch = useCallback(async (lat, lng) => {
     setStage("searching"); setError(""); setPond(null); setTimeline(null); setToday(null); setExplanation(""); setPondCoords(null); setTab("result");
     setStatusMsg("池を探しています...");
     try {
-      // Try 500m first, then 2km, then 5km
       let data, best;
       for (const radius of [500, 2000, 5000]) {
         setStatusMsg(`半径${radius >= 1000 ? (radius / 1000) + "km" : radius + "m"}で検索中...`);
@@ -660,13 +696,17 @@ export default function App() {
     } catch (e) { console.error(e); setStage("error"); setError(e.message || "エラーが発生しました"); }
   }, []);
 
-  const guardedSearch = useCallback((lat, lng) => {
-    if (!isPremium && useCount >= DAILY_LIMIT) {
+  const guardedSearch = useCallback(async (lat, lng) => {
+    if (isPremium) {
+      doSearch(lat, lng);
+      return;
+    }
+    if (useCount >= DAILY_LIMIT) {
       setShowPaywall(true);
       return;
     }
-    if (!isPremium) incrementUsage();
-    doSearch(lat, lng);
+    const allowed = await incrementUsage();
+    if (allowed) doSearch(lat, lng);
   }, [isPremium, useCount, incrementUsage, doSearch]);
 
   const debounceRef = useRef(null);
@@ -683,7 +723,10 @@ export default function App() {
     const result = await geocodeWater(searchText);
     if (result) {
       setMarker({ lat: result.lat, lng: result.lng });
-      if (!isPremium) incrementUsage();
+      if (!isPremium) {
+        const allowed = await incrementUsage();
+        if (!allowed) return;
+      }
       doSearch(result.lat, result.lng);
     } else { setStage("error"); setError("場所が見つかりませんでした。\n池や湖の正式名称で試してみてください。"); }
   }, [searchText, doSearch, isPremium, useCount, incrementUsage]);
@@ -695,6 +738,18 @@ export default function App() {
     { n: "河口湖", lat: 35.5100, lng: 138.7500 },
     { n: "印旛沼", lat: 35.7900, lng: 140.1900 },
   ];
+
+  // ---- AUTH LOADING / LOGIN ----
+  if (authStatus === "loading") {
+    return (
+      <div style={{ fontFamily: FONT, background: C.bg, color: C.text, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Spinner msg="読み込み中..." />
+      </div>
+    );
+  }
+  if (!session) return <LoginScreen />;
+
+  const remaining = Math.max(0, DAILY_LIMIT - useCount);
 
   return (
     <div style={{ fontFamily: FONT, background: C.bg, color: C.text, minHeight: "100vh", maxWidth: 520, margin: "0 auto" }}>
@@ -717,16 +772,43 @@ export default function App() {
             <h1 style={{ fontSize: 21, fontWeight: 900, letterSpacing: -0.5, lineHeight: 1.2 }}>池温<span style={{ color: C.accent }}>よそく</span></h1>
             <span style={{ fontSize: 10, color: C.textDim }}>地図タップで水温予測 ・ 全API無料</span>
           </div>
-          {isPremium ? (
-            <div style={{ background: `linear-gradient(135deg,${C.accent}22,${C.green}11)`, border: `1px solid ${C.accent}44`, borderRadius: 20, padding: "4px 10px", fontSize: 11, color: C.accent, fontWeight: 700 }}>
-              ⭐ プレミアム
-            </div>
-          ) : (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 20, padding: "4px 10px", fontSize: 11, color: useCount >= DAILY_LIMIT ? C.danger : C.textDim }}>
-              {DAILY_LIMIT - useCount > 0 ? `残り${DAILY_LIMIT - useCount}回` : "上限到達"}
-            </div>
-          )}
+          {/* USER MENU */}
+          <div style={{ position: "relative" }}>
+            <button onClick={() => setShowUserMenu(!showUserMenu)} style={{ width: 36, height: 36, borderRadius: "50%", border: `2px solid ${C.accent}44`, overflow: "hidden", cursor: "pointer", background: C.surface, padding: 0 }}>
+              {session.user?.image ? (
+                <img src={session.user.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+              ) : (
+                <span style={{ fontSize: 16 }}>👤</span>
+              )}
+            </button>
+            {showUserMenu && (
+              <div style={{ position: "absolute", right: 0, top: 42, background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 12, minWidth: 200, zIndex: 1000, boxShadow: `0 8px 32px ${C.bg}cc` }}>
+                <div style={{ fontSize: 12, color: C.text, fontWeight: 700, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.user?.name || "ユーザー"}</div>
+                <div style={{ fontSize: 10, color: C.textDim, marginBottom: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.user?.email}</div>
+                {isPremium && (
+                  <button onClick={() => { setShowUserMenu(false); handlePortal(); }} style={{ width: "100%", background: C.surface, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 6, cursor: "pointer", textAlign: "left" }}>サブスク管理・解約</button>
+                )}
+                <button onClick={() => { setShowUserMenu(false); signOut(); }} style={{ width: "100%", background: `${C.danger}15`, color: C.danger, border: `1px solid ${C.danger}33`, borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer", textAlign: "left" }}>ログアウト</button>
+              </div>
+            )}
+          </div>
         </div>
+      </div>
+
+      {/* USAGE INFO BAR */}
+      <div style={{ padding: "0 16px 10px" }}>
+        {isPremium ? (
+          <div style={{ background: `linear-gradient(135deg,${C.accent}15,${C.green}10)`, border: `1px solid ${C.accent}33`, borderRadius: 12, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: C.accent, fontWeight: 700 }}>⭐ プレミアム会員 ─ 無制限利用</span>
+          </div>
+        ) : (
+          <div style={{ background: C.surface, border: `1px solid ${remaining === 0 ? C.danger + "44" : C.border}`, borderRadius: 12, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, color: remaining === 0 ? C.danger : C.text }}>
+              {remaining > 0 ? `本日あと ${remaining}回 利用できます` : "本日の無料利用回数を超えました"}
+            </span>
+            <span style={{ fontSize: 11, color: C.textDim }}>（{useCount}/{DAILY_LIMIT}）</span>
+          </div>
+        )}
       </div>
 
       {/* SEARCH */}
@@ -850,7 +932,17 @@ export default function App() {
           </div>
         )}
       </div>
-      <div style={{ padding: "0 16px 30px", textAlign: "center" }}><span style={{ fontSize: 10, color: `${C.textDim}55` }}>池温よそく v1.1 ・ 全API無料 ・ © 2026</span></div>
+
+      {/* FOOTER */}
+      <div style={{ padding: "0 16px 30px" }}>
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 12, marginBottom: 12 }}>
+          <Link href="/terms" style={{ fontSize: 10, color: C.textDim, textDecoration: "none" }}>利用規約</Link>
+          <Link href="/privacy" style={{ fontSize: 10, color: C.textDim, textDecoration: "none" }}>プライバシーポリシー</Link>
+          <Link href="/legal" style={{ fontSize: 10, color: C.textDim, textDecoration: "none" }}>特定商取引法</Link>
+          <Link href="/cancel" style={{ fontSize: 10, color: C.textDim, textDecoration: "none" }}>解約について</Link>
+        </div>
+        <div style={{ textAlign: "center" }}><span style={{ fontSize: 10, color: `${C.textDim}55` }}>池温よそく v2.0 ・ 全API無料 ・ © 2026</span></div>
+      </div>
     </div>
   );
 }

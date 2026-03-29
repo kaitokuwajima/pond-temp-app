@@ -1,4 +1,5 @@
 import './globals.css';
+import AuthProvider from './components/AuthProvider';
 
 export const metadata = {
   title: '池温よそく - 釣り人のための水温予測',
@@ -15,7 +16,9 @@ export default function RootLayout({ children }) {
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
       </head>
-      <body>{children}</body>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

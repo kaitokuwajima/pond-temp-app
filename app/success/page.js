@@ -1,26 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 export default function SuccessPage() {
-  const searchParams = useSearchParams();
   const router = useRouter();
   const [msg, setMsg] = useState("サブスクリプションを確認中...");
 
   useEffect(() => {
-    const customerId = searchParams.get("customer_id");
-    if (customerId) {
-      localStorage.setItem("pondCustomerId", customerId);
-      localStorage.setItem(
-        "pondPremium",
-        JSON.stringify({ active: true, checkedAt: Date.now() })
-      );
-      setMsg("登録完了！無制限でご利用いただけます。");
-    }
+    setMsg("登録完了！無制限でご利用いただけます。");
     const t = setTimeout(() => router.push("/"), 3500);
     return () => clearTimeout(t);
-  }, []);
+  }, [router]);
 
   return (
     <div
