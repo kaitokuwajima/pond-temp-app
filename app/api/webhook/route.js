@@ -1,5 +1,4 @@
 import Stripe from "stripe";
-import prisma from "../../../lib/prisma";
 
 export async function POST(req) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -14,59 +13,20 @@ export async function POST(req) {
     return Response.json({ error: e.message }, { status: 400 });
   }
 
-  try {
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object;
-        const customerId = session.customer;
-        if (customerId) {
-          await prisma.user.updateMany({
-            where: { stripeCustomerId: customerId },
-            data: { subscriptionStatus: "active" },
-          });
-        }
-        break;
-      }
-
-      case "invoice.payment_failed": {
-        const invoice = event.data.object;
-        const customerId = invoice.customer;
-        if (customerId) {
-          await prisma.user.updateMany({
-            where: { stripeCustomerId: customerId },
-            data: { subscriptionStatus: "past_due" },
-          });
-        }
-        break;
-      }
-
-      case "customer.subscription.deleted": {
-        const subscription = event.data.object;
-        const customerId = subscription.customer;
-        if (customerId) {
-          await prisma.user.updateMany({
-            where: { stripeCustomerId: customerId },
-            data: { subscriptionStatus: "inactive" },
-          });
-        }
-        break;
-      }
-
-      case "customer.subscription.updated": {
-        const subscription = event.data.object;
-        const customerId = subscription.customer;
-        const status = subscription.status === "active" ? "active" : "inactive";
-        if (customerId) {
-          await prisma.user.updateMany({
-            where: { stripeCustomerId: customerId },
-            data: { subscriptionStatus: status },
-          });
-        }
-        break;
-      }
-    }
-  } catch (e) {
-    console.error("Webhook handler error:", e);
+  // ログ出力（サブスク状態はStripe APIで都度確認するため、DB更新不要）
+  switch (event.type) {
+    case "checkout.session.completed":
+      console.log("Checkout completed:", event.data.object.customer);
+      break;
+    case "invoice.payment_failed":
+      console.log("Payment failed:", event.data.object.customer);
+      break;
+    case "customer.subscription.deleted":
+      console.log("Subscription cancelled:", event.data.object.customer);
+      break;
+    case "customer.subscription.updated":
+      console.log("Subscription updated:", event.data.object.customer);
+      break;
   }
 
   return Response.json({ received: true });

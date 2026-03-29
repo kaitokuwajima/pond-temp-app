@@ -587,36 +587,52 @@ export default function App() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  // サーバーから利用状況を取得
-  const fetchUsage = useCallback(async () => {
-    try {
-      const r = await fetch("/api/usage");
-      if (!r.ok) return;
-      const data = await r.json();
-      setUseCount(data.usageCount);
-      setIsPremium(data.subscriptionActive);
-    } catch {}
-  }, []);
-
+  // ユーザーIDベースのlocalStorage利用管理 + 0時リセット
   useEffect(() => {
-    if (session) fetchUsage();
-  }, [session, fetchUsage]);
-
-  // サーバー側で利用回数をインクリメント
-  const incrementUsage = useCallback(async () => {
-    try {
-      const r = await fetch("/api/usage", { method: "POST" });
-      const data = await r.json();
-      if (!data.allowed) {
-        setShowPaywall(true);
-        return false;
-      }
-      setUseCount(data.usageCount);
-      return true;
-    } catch {
-      return true; // ネットワークエラー時はブロックしない
+    if (!session?.user?.id) return;
+    const storageKey = `pondUsage_${session.user.id}`;
+    const todayDate = new Date().toISOString().split("T")[0];
+    const stored = JSON.parse(localStorage.getItem(storageKey) || '{"date":"","count":0}');
+    if (stored.date !== todayDate) {
+      localStorage.setItem(storageKey, JSON.stringify({ date: todayDate, count: 0 }));
+      setUseCount(0);
+    } else {
+      setUseCount(stored.count);
     }
-  }, []);
+
+    // Stripe経由でプレミアム確認
+    const verifyPremium = async () => {
+      const cached = JSON.parse(localStorage.getItem(`pondPremium_${session.user.id}`) || "null");
+      if (cached && Date.now() - cached.checkedAt < 3600000) {
+        setIsPremium(cached.active);
+        return;
+      }
+      try {
+        const r = await fetch("/api/verify-subscription");
+        const { active } = await r.json();
+        setIsPremium(active);
+        localStorage.setItem(`pondPremium_${session.user.id}`, JSON.stringify({ active, checkedAt: Date.now() }));
+      } catch {}
+    };
+    verifyPremium();
+  }, [session]);
+
+  // 利用回数インクリメント（クライアント側）
+  const incrementUsage = useCallback(() => {
+    if (!session?.user?.id) return true;
+    const storageKey = `pondUsage_${session.user.id}`;
+    const todayDate = new Date().toISOString().split("T")[0];
+    const stored = JSON.parse(localStorage.getItem(storageKey) || '{"date":"","count":0}');
+    const currentCount = stored.date === todayDate ? stored.count : 0;
+    if (currentCount >= DAILY_LIMIT) {
+      setShowPaywall(true);
+      return false;
+    }
+    const next = currentCount + 1;
+    setUseCount(next);
+    localStorage.setItem(storageKey, JSON.stringify({ date: todayDate, count: next }));
+    return true;
+  }, [session]);
 
   const handleCheckout = useCallback(async () => {
     setCheckoutLoading(true);
@@ -696,7 +712,7 @@ export default function App() {
     } catch (e) { console.error(e); setStage("error"); setError(e.message || "エラーが発生しました"); }
   }, []);
 
-  const guardedSearch = useCallback(async (lat, lng) => {
+  const guardedSearch = useCallback((lat, lng) => {
     if (isPremium) {
       doSearch(lat, lng);
       return;
@@ -705,7 +721,7 @@ export default function App() {
       setShowPaywall(true);
       return;
     }
-    const allowed = await incrementUsage();
+    const allowed = incrementUsage();
     if (allowed) doSearch(lat, lng);
   }, [isPremium, useCount, incrementUsage, doSearch]);
 
@@ -724,7 +740,7 @@ export default function App() {
     if (result) {
       setMarker({ lat: result.lat, lng: result.lng });
       if (!isPremium) {
-        const allowed = await incrementUsage();
+        const allowed = incrementUsage();
         if (!allowed) return;
       }
       doSearch(result.lat, result.lng);

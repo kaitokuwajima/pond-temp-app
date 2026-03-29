@@ -1,45 +1,42 @@
 import Stripe from "stripe";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../lib/auth";
-import prisma from "../../../lib/prisma";
 
 export async function POST() {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
   const session = await getServerSession(authOptions);
 
-  if (!session?.user?.id) {
+  if (!session?.user?.email) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
   try {
-    const user = await prisma.user.findUnique({ where: { id: session.user.id } });
-    if (!user) return Response.json({ error: "user not found" }, { status: 404 });
+    // メールでStripe顧客を検索
+    const existing = await stripe.customers.list({
+      email: session.user.email,
+      limit: 1,
+    });
 
-    // 二重課金防止
-    if (user.subscriptionStatus === "active") {
-      return Response.json({ error: "already_subscribed" }, { status: 400 });
-    }
-
-    let customerId = user.stripeCustomerId;
-    if (customerId) {
-      try {
-        const c = await stripe.customers.retrieve(customerId);
-        if (c.deleted) customerId = null;
-      } catch {
-        customerId = null;
+    let customerId;
+    if (existing.data.length > 0) {
+      const customer = existing.data[0];
+      // 二重課金防止: 既にアクティブなサブスクがあるか確認
+      const subs = await stripe.subscriptions.list({
+        customer: customer.id,
+        status: "active",
+        limit: 1,
+      });
+      if (subs.data.length > 0) {
+        return Response.json({ error: "already_subscribed" }, { status: 400 });
       }
-    }
-
-    if (!customerId) {
+      customerId = customer.id;
+    } else {
       const customer = await stripe.customers.create({
-        email: user.email,
-        metadata: { userId: user.id },
+        email: session.user.email,
+        name: session.user.name || undefined,
+        metadata: { authProvider: session.user.provider || "unknown" },
       });
       customerId = customer.id;
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { stripeCustomerId: customerId },
-      });
     }
 
     const checkoutSession = await stripe.checkout.sessions.create({
